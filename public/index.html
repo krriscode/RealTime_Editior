@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Local Sync FileEditor</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+
+    #navbar {
+      background: #333;
+      color: #fff;
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .menu-btn {
+      background: #555;
+      padding: 5px 10px;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #logo {
+      font-weight: bold;
+      font-size: 18px;
+      margin-left: auto;
+      color: #00e0ff;
+      user-select: none;
+    }
+
+    #activeFileBar {
+      background: #f3f3f3;
+      padding: 8px 16px;
+      font-weight: bold;
+      font-size: 16px;
+      border-bottom: 1px solid #ccc;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      user-select: none;
+    }
+
+    #activeFileName {
+      flex: 1;
+      color: #333;
+      overflow-wrap: break-word;
+    }
+
+    #closeActiveFile {
+      cursor: pointer;
+      color: #900;
+      font-size: 20px;
+      user-select: none;
+    }
+
+    #editor {
+      width: 100%;
+      height: 85vh;
+      padding: 15px;
+      box-sizing: border-box;
+      font-family: monospace;
+      font-size: 16px;
+      border: none;
+      resize: none;
+      outline: none;
+    }
+
+    #file-dropdown {
+      position: absolute;
+      background: #fff;
+      color: #000;
+      border: 1px solid #ccc;
+      padding: 5px;
+      display: none;
+      flex-direction: column;
+      max-height: 200px;
+      overflow-y: auto;
+      z-index: 1000;
+    }
+
+    #file-dropdown div {
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+
+    #file-dropdown div:hover {
+      background: #eee;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="navbar">
+    <div class="menu-btn" id="openIcon">📂 Open</div>
+    <div class="menu-btn" id="newFileBtn">📄 New</div>
+    <div class="menu-btn" id="renameFileBtn">📝 Rename</div>
+    <div class="menu-btn" id="deleteFileBtn">🗑️ Delete</div>
+    <div class="menu-btn" id="downloadFileBtn">📥 Download</div>
+    <div id="logo">📝 Local Shared Editor</div>
+  </div>
+
+  <div id="activeFileBar" style="display: none;">
+    <span id="activeFileName"></span>
+    <span id="closeActiveFile" title="Close file">×</span>
+  </div>
+
+  <div id="file-dropdown"></div>
+
+  <textarea id="editor" placeholder="Select or create a file to edit..." spellcheck="false"></textarea>
+
+  <script>
+    const socket = io();
+    const editor = document.getElementById('editor');
+    const dropdown = document.getElementById('file-dropdown');
+
+    const openIcon = document.getElementById('openIcon');
+    const newFileBtn = document.getElementById('newFileBtn');
+    const renameFileBtn = document.getElementById('renameFileBtn');
+    const deleteFileBtn = document.getElementById('deleteFileBtn');
+    const downloadFileBtn = document.getElementById('downloadFileBtn');
+
+    const activeFileBar = document.getElementById('activeFileBar');
+    const activeFileNameEl = document.getElementById('activeFileName');
+    const closeActiveFileBtn = document.getElementById('closeActiveFile');
+
+    let currentFile = null;
+    let selfEdit = false;
+
+    // Open file dropdown on click
+    openIcon.addEventListener('click', () => {
+      const rect = openIcon.getBoundingClientRect();
+      dropdown.style.top = rect.bottom + "px";
+      dropdown.style.left = rect.left + "px";
+      dropdown.style.display = dropdown.style.display === 'flex' ? 'none' : 'flex';
+      socket.emit('list-files');
+    });
+
+    // Populate dropdown list
+    socket.on('file-list', (files) => {
+      dropdown.innerHTML = '';
+      files.forEach(file => {
+        const item = document.createElement('div');
+        item.textContent = file;
+        item.addEventListener('click', () => {
+          dropdown.style.display = 'none';
+          openFile(file);
+        });
+        dropdown.appendChild(item);
+      });
+    });
+
+    // Open a file: show active file bar + load content
+    function openFile(fileName) {
+      currentFile = fileName;
+      activeFileNameEl.textContent = fileName;
+      activeFileBar.style.display = 'flex';
+      socket.emit('get-file', fileName);
+    }
+
+    // Close active file
+    closeActiveFileBtn.addEventListener('click', () => {
+      currentFile = null;
+      editor.value = '';
+      activeFileBar.style.display = 'none';
+    });
+
+    // Receive file content and update editor (if current file)
+    socket.on('file-content', ({ file, content }) => {
+      if (file === currentFile && !selfEdit) {
+        editor.value = content;
+      }
+      selfEdit = false;
+    });
+
+    // When file updated by other clients
+    socket.on('file-updated', ({ file, content }) => {
+      if (file === currentFile && !selfEdit) {
+        editor.value = content;
+      }
+      selfEdit = false;
+    });
+
+    // Emit edits to server
+    editor.addEventListener('input', () => {
+      if (currentFile) {
+        selfEdit = true;
+        socket.emit('edit-file', { file: currentFile, content: editor.value });
+      }
+    });
+
+    // Create new file
+    newFileBtn.addEventListener('click', () => {
+      const name = prompt('Enter new file name (with .txt):');
+      if (name) {
+        socket.emit('create-file', name);
+      }
+    });
+
+    socket.on('file-created', (file) => {
+      openFile(file);
+    });
+
+    // Rename current file
+    renameFileBtn.addEventListener('click', () => {
+      if (!currentFile) return alert('No file open');
+      const newName = prompt('Enter new name (with .txt):', currentFile);
+      if (newName && newName !== currentFile) {
+        socket.emit('rename-file', { oldName: currentFile, newName });
+        // Update active file display
+        activeFileNameEl.textContent = newName;
+        currentFile = newName;
+      }
+    });
+
+    socket.on('file-renamed', ({ oldName, newName }) => {
+      // No tabs to update, just keep currentFile consistent (handled above)
+      // Could add notification here if desired
+    });
+
+    // Delete current file
+    deleteFileBtn.addEventListener('click', () => {
+      if (!currentFile) return alert('No file open');
+      const confirmDelete = confirm(`Delete "${currentFile}"?`);
+      if (confirmDelete) {
+        socket.emit('delete-file', currentFile);
+      }
+    });
+
+    socket.on('file-deleted', (file) => {
+      if (currentFile === file) {
+        editor.value = '';
+        currentFile = null;
+        activeFileBar.style.display = 'none';
+      }
+    });
+
+    // Download current file
+    downloadFileBtn.addEventListener('click', () => {
+      if (!currentFile) return alert('No file open');
+      const blob = new Blob([editor.value], { type: 'text/plain' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = currentFile;
+      link.click();
+    });
+
+    // Hide dropdown if clicking outside
+    window.addEventListener('click', (e) => {
+      if (!dropdown.contains(e.target) && e.target !== openIcon) {
+        dropdown.style.display = 'none';
+      }
+    });
+  </script>
+</body>
+</html>
